@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <getopt.h>
+#include "disk.h"
 
 extern char *optarg;
 extern int optind;
@@ -50,7 +51,16 @@ int main(int argc, char* argv[]){
 		print_help_msg();
 	} else{
 		args.diskname=argv[optind];
-		printf("diskname=%s, opt=%c, sha1=%p, filename=%s\n", args.diskname, args.opt, args.sha1, args.filename);
+		disk_init(args.diskname);
+		switch(args.opt){
+			case 'i':
+				disk_info();
+				break;
+			case 'l':
+				disk_list_root_dir();
+				break;
+		}
+		disk_destroy();
 	}
 	return 0;
 }
