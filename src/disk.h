@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <string.h>
+#include <openssl/sha.h>
 #include "disk_struct.h"
 
 #define CLUSTER_START_IDX 2
@@ -54,6 +55,7 @@ void* get_cluster(int cluster){
     int cluster_size=((int)boot->BPB_BytsPerSec)*(int)boot->BPB_SecPerClus;
     return (void*)(disk+(boot_size+total_fat_size+cluster*cluster_size));
 }
+// gets the [fat_idx]th fat (address of the table)
 void* get_fat(int fat_idx){
     BootEntry* boot=get_boot();
     int boot_size=(int)(boot->BPB_RsvdSecCnt)*(int)boot->BPB_BytsPerSec;
@@ -62,7 +64,7 @@ void* get_fat(int fat_idx){
 }
 // is this cluster eof
 int fat_eof(int cluster){
-    return cluster>=0x0ffffff8;
+    return cluster>=FAT_EOF;
 }
 // returns the cluster number linked by the given cluster
 int fat(int cluster){
@@ -70,13 +72,32 @@ int fat(int cluster){
     int32_t* table=(void*)get_fat(0);
     return (int)table[cluster];
 }
+// links a cluster with another cluster in the fat
+void set_fat(int cluster, int value){
+    cluster-=CLUSTER_START_IDX;
+    int num_fat=get_boot()->BPB_NumFATs;
+    for(int i=0;i<num_fat;++i){
+        int32_t* table=get_fat(i);
+        table[cluster]=value;
+    }
+}
+void disk_print_fat(int start, int len){
+    BootEntry* boot=get_boot();
+    int fat_size=(int)boot->BPB_FATSz32*(int)boot->BPB_BytsPerSec;
+    int num_clusters=fat_size/4;
+    printf("num clusters: %d\n", num_clusters);
+    for(int i=start;i<start+len && i<num_clusters;++i){
+        printf("%3d |%4d\n", i, fat(i));
+    }
+}
 int dir_is_unallocated(DirEntry* dir_entry){
     return dir_entry->DIR_Name[0]==0 || dir_entry->DIR_Name[0]==0xe5;
 }
 int dir_is_lfn(DirEntry* dir_entry){
     return dir_entry->DIR_Attr==DIR_ATTR_LFN;
 }
-int get_cluster_lh(unsigned short lo, unsigned short hi){
+int get_cluster_lh(DirEntry* dir){
+    unsigned short lo=dir->DIR_FstClusLO, hi=dir->DIR_FstClusHI;
     return (int)((((unsigned int)hi)<<(8*sizeof(unsigned short)))|(unsigned int)lo);
 }
 void print_dir_name(DirEntry* dir){
@@ -92,7 +113,7 @@ void print_dir_name(DirEntry* dir){
     printf(" ");
 }
 void print_dir_info(DirEntry* dir){
-    int cluster=get_cluster_lh(dir->DIR_FstClusLO, dir->DIR_FstClusHI);
+    int cluster=get_cluster_lh(dir);
     if((((int)dir->DIR_Attr)&DIR_ATTR_DIR)==DIR_ATTR_DIR){ // a directory
         printf("(starting cluster = %d)", cluster);
     } else{ // regular file
@@ -171,6 +192,24 @@ void find_deleted_dir(const char* filename, DirEntry** out_deleted_dirs, int* ou
         find_deleted_dir_internal(dir_cluster, filename, out_deleted_dirs, out_deleted_dirs_len, out_deleted_dirs_cap);
     }
 }
+
+void recover_dir_continuous(DirEntry* dir, const char* filename){
+    // recover file name
+    dir->DIR_Name[0]=filename[0];
+    // recover clusters (link them together)
+    BootEntry* boot=get_boot();
+    int cluster_size=(int)boot->BPB_BytsPerSec*(int)boot->BPB_SecPerClus;
+    int num_clusters=((int)dir->DIR_FileSize+cluster_size-1)/cluster_size;
+    if(num_clusters>0){
+        int cur_cluster=get_cluster_lh(dir);
+        for(int i=1;i<num_clusters;++i){
+            int next_cluster=cur_cluster+1;
+            set_fat(cur_cluster, next_cluster);
+            cur_cluster=next_cluster;
+        }
+        set_fat(cur_cluster, FAT_EOF);
+    }
+}
 // ==========================
 
 void disk_info(){
@@ -194,7 +233,7 @@ void disk_list_root_dir(){
     printf("Total number of entries = %d\n", total_entries);
 }
 
-void disk_recover_file(const char* filename){
+void disk_recover_file(const char* filename, const char* sha1){
     #define DELETED_DIRS_LEN 128
     DirEntry* deleted_dirs[DELETED_DIRS_LEN];
     int deleted_dirs_len=0;
@@ -202,11 +241,17 @@ void disk_recover_file(const char* filename){
     if(deleted_dirs_len==0){
         printf("%s: file not found\n", filename);
     } else if(deleted_dirs_len>1){
-        printf("%s: multiple candidates found\n", filename);
+        if(sha1==NULL)
+            printf("%s: multiple candidates found\n", filename);
+        else{ // recover the file based on sha1 value
+
+        }
     } else{
+        // TODO: if sha1 is provided, compare the sha1 value.
         DirEntry* deleted_ent=deleted_dirs[0];
-        deleted_ent->DIR_Name[0]=filename[0];
+        recover_dir_continuous(deleted_ent, filename);
         printf("%s: successfully recovered\n", filename);
+        disk_print_fat(get_cluster_lh(deleted_ent), 3);
     }
     #undef DELETED_DIRS_LEN
 }
