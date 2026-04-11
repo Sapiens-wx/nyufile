@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <string.h>
 #include "disk_struct.h"
 
 #define CLUSTER_START_IDX 2
@@ -15,7 +16,7 @@ size_t disk_size;
 
 void disk_init(const char* diskname) {
     // open the disk file
-    int fd = open(diskname, O_RDONLY);
+    int fd = open(diskname, O_RDWR);
     if (fd == -1) {
         perror("error opening the disk file");
     }
@@ -28,7 +29,7 @@ void disk_init(const char* diskname) {
     disk_size = st.st_size;
 
     // mmap
-    disk = mmap(NULL, disk_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    disk = mmap(NULL, disk_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (disk == MAP_FAILED) {
         perror("mmap");
     }
@@ -37,6 +38,7 @@ void disk_init(const char* diskname) {
 }
 
 void disk_destroy(){
+    //msync(disk, disk_size, MS_SYNC);
     munmap(disk, disk_size);
 }
 
@@ -122,6 +124,53 @@ int print_dir_in_cluster(DirEntry* cluster){
     }
     return entries;
 }
+// -----recover files-----
+
+int is_deleted_dir_match_filename(DirEntry* dir, const char* filename){
+    const char* dir_name=(const char*)&(dir->DIR_Name[1]);
+    char actual_filename[11];
+    const char* filename_it=filename;
+    for(int i=0;i<11;){
+        if(*filename_it=='.'){
+            while(i<8)
+                actual_filename[i++]=' ';
+            ++filename_it;
+        } else{
+            actual_filename[i++]=*filename_it;
+            if(*filename_it)
+                ++filename_it;
+        }
+    }
+    return memcmp(dir_name, actual_filename+1, 10)==0;
+}
+
+// finds all deleted files that match the given file name
+void find_deleted_dir_internal(DirEntry* cluster, const char* filename, DirEntry** out_deleted_dirs, int* out_deleted_dirs_len, int out_deleted_dirs_cap){
+    BootEntry* boot=get_boot();
+    const int cluster_size=(int)boot->BPB_BytsPerSec*(int)boot->BPB_SecPerClus;
+    const int max_entries=cluster_size/sizeof(DirEntry);
+    for(int i=0;i<max_entries;++i){
+        DirEntry* cur=cluster+i;
+        if(!dir_is_lfn(cur) && dir_is_unallocated(cur)){
+            if(is_deleted_dir_match_filename(cur, filename)){
+                if(*out_deleted_dirs_len>=out_deleted_dirs_cap)
+                    perror("find_deleted_dir: out_deleted_dirs out of space");
+                out_deleted_dirs[(*out_deleted_dirs_len)++]=cur;
+            }
+        }
+    }
+}
+// finds all matched deleted files in the root directory
+void find_deleted_dir(const char* filename, DirEntry** out_deleted_dirs, int* out_deleted_dirs_len, int out_deleted_dirs_cap){
+    BootEntry* boot=(BootEntry*)disk;
+    const int root_cluster=boot->BPB_RootClus;
+    // traverse through the root dir (may have multiple clusters)
+    for(int cur_cluster=root_cluster;!fat_eof(cur_cluster);cur_cluster=fat(cur_cluster)){
+        DirEntry* dir_cluster=(DirEntry*)get_cluster(cur_cluster);
+        // find all deleted files that matches the filename
+        find_deleted_dir_internal(dir_cluster, filename, out_deleted_dirs, out_deleted_dirs_len, out_deleted_dirs_cap);
+    }
+}
 // ==========================
 
 void disk_info(){
@@ -137,9 +186,27 @@ void disk_list_root_dir(){
     BootEntry* boot=(BootEntry*)disk;
     const int root_cluster=boot->BPB_RootClus;
     int total_entries=0;
+    // traverse through the root dir (may have multiple clusters)
     for(int cur_cluster=root_cluster;!fat_eof(cur_cluster);cur_cluster=fat(cur_cluster)){
         DirEntry* dir_cluster=(DirEntry*)get_cluster(cur_cluster);
         total_entries+=print_dir_in_cluster(dir_cluster);
     }
     printf("Total number of entries = %d\n", total_entries);
+}
+
+void disk_recover_file(const char* filename){
+    #define DELETED_DIRS_LEN 128
+    DirEntry* deleted_dirs[DELETED_DIRS_LEN];
+    int deleted_dirs_len=0;
+    find_deleted_dir(filename, deleted_dirs, &deleted_dirs_len, DELETED_DIRS_LEN);
+    if(deleted_dirs_len==0){
+        printf("%s: file not found\n", filename);
+    } else if(deleted_dirs_len>1){
+        printf("%s: multiple candidates found\n", filename);
+    } else{
+        DirEntry* deleted_ent=deleted_dirs[0];
+        deleted_ent->DIR_Name[0]=filename[0];
+        printf("%s: successfully recovered\n", filename);
+    }
+    #undef DELETED_DIRS_LEN
 }

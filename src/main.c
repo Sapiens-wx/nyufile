@@ -59,6 +59,9 @@ int main(int argc, char* argv[]){
 			case 'l':
 				disk_list_root_dir();
 				break;
+			case 'r':
+				disk_recover_file(args.filename);
+				break;
 		}
 		disk_destroy();
 	}
