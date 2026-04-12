@@ -47,6 +47,8 @@ int main(int argc, char* argv[]){
 	}
 	if(optind>=argc)
 		error=1;
+	if(args.opt=='R' && args.sha1==NULL)
+		error=1;
 	if(error){
 		print_help_msg();
 	} else{
@@ -60,7 +62,10 @@ int main(int argc, char* argv[]){
 				disk_list_root_dir();
 				break;
 			case 'r':
-				disk_recover_file(args.filename);
+				disk_recover_file_continuous(args.filename, args.sha1);
+				break;
+			case 'R':
+				disk_recover_file(args.filename, args.sha1);
 				break;
 		}
 		disk_destroy();

@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -g -pedantic -std=c99 -Wall -Werror -Wextra -lcrypto -I.
+CFLAGS = -g -pedantic -std=c99 -Wall -Werror -Wextra -I.
 
 SRC_DIR = ./src
 BUILD_DIR = ./build
@@ -13,7 +13,7 @@ OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ -lcrypto
 
 # 确保 build 目录存在
 $(BUILD_DIR):

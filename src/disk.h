@@ -210,6 +210,162 @@ void recover_dir_continuous(DirEntry* dir, const char* filename){
         set_fat(cur_cluster, FAT_EOF);
     }
 }
+// -----sha1-----
+void print_hex(const unsigned char* bin, int len){
+    for(int i=0;i<len;++i){
+        printf("%02x", bin[i]);
+    }
+}
+// if returns NULL, then the dir is empty
+// assumes that the clusters are contiguous
+void* read_dir_continuous(DirEntry* dir){
+    BootEntry* boot=get_boot();
+    long long file_size=dir->DIR_FileSize;
+    int cluster_size=(int)boot->BPB_BytsPerSec*(int)boot->BPB_SecPerClus;
+    int num_clusters=((int)file_size+cluster_size-1)/cluster_size;
+    if(num_clusters==0)
+        return NULL;
+    char* d=(char*)malloc((size_t)file_size);
+    int cur_cluster=get_cluster_lh(dir);
+    for(int i=0;i<num_clusters;++i){
+        memcpy(d+i*cluster_size, get_cluster(cur_cluster), file_size>cluster_size?(size_t)cluster_size:(size_t)file_size);
+        cur_cluster++;
+        file_size-=cluster_size;
+    }
+    return d;
+}
+void sha1_dir_continuous(DirEntry* dir, unsigned char* sha1){
+    unsigned char* d=(unsigned char*)read_dir_continuous(dir);
+    SHA1(d, dir->DIR_FileSize, sha1);
+    free(d);
+}
+int hex_char_to_val(char c) {
+    if ('0' <= c && c <= '9') return c - '0';
+    if ('a' <= c && c <= 'f') return c - 'a' + 10;
+    if ('A' <= c && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int sha1_hex_to_bin(const char *hex, unsigned char *out) {
+    if (strlen(hex) != 40) return -1;
+
+    for (int i = 0; i < 20; i++) {
+        int hi = hex_char_to_val(hex[2 * i]);
+        int lo = hex_char_to_val(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (hi << 4) | lo;
+    }
+    return 0;
+}
+// returns true if equal
+int sha1_cmp_continuous(const unsigned char* sha1, DirEntry* dir){
+    unsigned char dir_sha1[SHA_DIGEST_LENGTH];
+    unsigned char target_sha1[SHA_DIGEST_LENGTH];
+    sha1_dir_continuous(dir, dir_sha1);
+    sha1_hex_to_bin((const char*)sha1, target_sha1);
+    return memcmp(dir_sha1, target_sha1, SHA_DIGEST_LENGTH)==0;
+}
+
+// recovers a contiguously allocated DirEntry with sha1 value
+DirEntry* recover_dir_sha1_continuous(const char* filename, DirEntry** dirs, int dirs_len, const char* sha1){
+    DirEntry* target_dir=NULL;
+    for(int i=0;i<dirs_len;++i){
+        if(sha1_cmp_continuous((unsigned char*)sha1, dirs[i])){
+            target_dir=dirs[i];
+            break;
+        }
+    }
+    if(target_dir==NULL){
+        return NULL;
+    }
+    recover_dir_continuous(target_dir, filename);
+    return target_dir;
+}
+
+int factorial(int n){
+    if(n<=1) return 1;
+    return n*factorial(n-1);
+}
+#define SEARCH_CLUSTER_END_INDEX 22
+#define PERMUTE_MAX_COUNT 5
+typedef struct Permute_t{
+    char sha1_bin[SHA_DIGEST_LENGTH];
+    int hash[SEARCH_CLUSTER_END_INDEX]; // if hash[cluster]==0, then this cluster can be chosen
+    char* data; // reads data to this continuous memory
+    int permutation[5];
+    long long file_size;
+    int cluster_size;
+    int num_clusters; // how many clusters in total we have to find (max PERMUTE_MAX_COUNT)
+} Permute_t;
+
+int permute_dir_internal(Permute_t* info, int permute_idx){
+    if(permute_idx==info->num_clusters){
+        // done permuting. do the thing
+        unsigned char dir_sha1[SHA_DIGEST_LENGTH];
+        SHA1((const unsigned char*)info->data, info->file_size, dir_sha1);
+        if(memcmp(dir_sha1, info->sha1_bin, SHA_DIGEST_LENGTH)==0){
+            return 1;
+        }
+        return 0;
+    }
+    for(int i=CLUSTER_START_IDX;i<SEARCH_CLUSTER_END_INDEX;++i){
+        info->hash[i]=fat(i);
+        if(info->hash[i]==0){
+            info->hash[i]=1;
+            info->permutation[permute_idx]=i;
+            long long rest_file_size=info->file_size-permute_idx*info->cluster_size;
+            memcpy(info->data+permute_idx*info->cluster_size, get_cluster(i), rest_file_size>info->cluster_size?info->cluster_size:rest_file_size);
+            if(permute_dir_internal(info, permute_idx+1))
+                return 1;
+        }
+    }
+    return 0;
+}
+// permute all possible cluster combinations for [dir] and returns the correct permutation
+// returns 0 if fails. Otherwise, succeeds.
+int permute_dir(DirEntry* dir, const char* sha1, Permute_t* out_permute_info){
+    BootEntry* boot=get_boot();
+    long long file_size=dir->DIR_FileSize;
+    int cluster_size=(int)boot->BPB_BytsPerSec*(int)boot->BPB_SecPerClus;
+    int num_clusters=((int)file_size+cluster_size-1)/cluster_size;
+
+    // init permute info
+    sha1_hex_to_bin(sha1, (unsigned char*)out_permute_info->sha1_bin);
+    out_permute_info->data=(char*)malloc((size_t)file_size);
+    out_permute_info->file_size=file_size;
+    out_permute_info->cluster_size=cluster_size;
+    out_permute_info->num_clusters=num_clusters;
+
+    out_permute_info->permutation[0]=get_cluster_lh(dir);
+    out_permute_info->hash[out_permute_info->permutation[0]]=1;
+    return permute_dir_internal(out_permute_info, 1);
+}
+DirEntry* recover_dir_sha1(const char* filename, DirEntry** dirs, int dirs_len, const char* sha1){
+    Permute_t permute_info;
+    DirEntry* deleted_ent=NULL;
+    for(int i=0;i<dirs_len;++i){
+        DirEntry* dir=dirs[i];
+        if(permute_dir(dir, sha1, &permute_info)){
+            deleted_ent=dir;
+            break;
+        }
+    }
+    if(deleted_ent==NULL)
+        return NULL;
+    // recover file name
+    deleted_ent->DIR_Name[0]=filename[0];
+    // recover clusters (link them together)
+    if(permute_info.num_clusters>0){
+        int cur_cluster=permute_info.permutation[0];
+        for(int i=1;i<permute_info.num_clusters;++i){
+            int next_cluster=permute_info.permutation[i];
+            set_fat(cur_cluster, next_cluster);
+            cur_cluster=next_cluster;
+        }
+        set_fat(cur_cluster, FAT_EOF);
+    }
+    return deleted_ent;
+}
 // ==========================
 
 void disk_info(){
@@ -233,7 +389,7 @@ void disk_list_root_dir(){
     printf("Total number of entries = %d\n", total_entries);
 }
 
-void disk_recover_file(const char* filename, const char* sha1){
+void disk_recover_file_continuous(const char* filename, const char* sha1){
     #define DELETED_DIRS_LEN 128
     DirEntry* deleted_dirs[DELETED_DIRS_LEN];
     int deleted_dirs_len=0;
@@ -244,14 +400,38 @@ void disk_recover_file(const char* filename, const char* sha1){
         if(sha1==NULL)
             printf("%s: multiple candidates found\n", filename);
         else{ // recover the file based on sha1 value
-
+            DirEntry* recovered_dir = recover_dir_sha1_continuous(filename, deleted_dirs, deleted_dirs_len, sha1);
+            if(recovered_dir==NULL)
+                printf("%s: file not found\n", filename);
+            else
+                printf("%s: successfully recovered with SHA-1\n", filename);
         }
     } else{
         // TODO: if sha1 is provided, compare the sha1 value.
         DirEntry* deleted_ent=deleted_dirs[0];
-        recover_dir_continuous(deleted_ent, filename);
-        printf("%s: successfully recovered\n", filename);
-        disk_print_fat(get_cluster_lh(deleted_ent), 3);
+        if(sha1!=NULL && !sha1_cmp_continuous((const unsigned char*)sha1, deleted_ent))
+            printf("%s: file not found\n", filename);
+        else{
+            recover_dir_continuous(deleted_ent, filename);
+            printf("%s: successfully recovered\n", filename);
+        }
+    }
+    #undef DELETED_DIRS_LEN
+}
+
+void disk_recover_file(const char* filename, const char* sha1){
+    #define DELETED_DIRS_LEN 128
+    DirEntry* deleted_dirs[DELETED_DIRS_LEN];
+    int deleted_dirs_len=0;
+    find_deleted_dir(filename, deleted_dirs, &deleted_dirs_len, DELETED_DIRS_LEN);
+    if(deleted_dirs_len==0){
+        printf("%s: file not found\n", filename);
+    } else{
+        DirEntry* recovered_dir = recover_dir_sha1(filename, deleted_dirs, deleted_dirs_len, sha1);
+        if(recovered_dir==NULL)
+            printf("%s: file not found\n", filename);
+        else
+            printf("%s: successfully recovered with SHA-1\n", filename);
     }
     #undef DELETED_DIRS_LEN
 }

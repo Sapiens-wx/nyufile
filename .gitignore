@@ -2,3 +2,5 @@ fat32.disk
 build/
 nyufile
 *.sh
+nyufile-autograder/
+*.zip
