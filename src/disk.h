@@ -68,13 +68,11 @@ int fat_eof(int cluster){
 }
 // returns the cluster number linked by the given cluster
 int fat(int cluster){
-    cluster-=CLUSTER_START_IDX; // cluster starts from 2
     int32_t* table=(void*)get_fat(0);
     return (int)table[cluster];
 }
 // links a cluster with another cluster in the fat
 void set_fat(int cluster, int value){
-    cluster-=CLUSTER_START_IDX;
     int num_fat=get_boot()->BPB_NumFATs;
     for(int i=0;i<num_fat;++i){
         int32_t* table=get_fat(i);
@@ -104,8 +102,10 @@ void print_dir_name(DirEntry* dir){
     const char* name=(char*)dir->DIR_Name;
     for(int i=0;i<8 && name[i]!=' ';++i)
         printf("%c", name[i]);
-    if(name[9]!=' '){ // has suffix
-        printf(".%.*s", 3, name+8);
+    if(name[8]!=' '){
+        printf(".");
+        for(int i=8;i<11 && name[i]!=' ';++i)
+            printf("%c", name[i]);
     }
     if((((int)dir->DIR_Attr)&DIR_ATTR_DIR)==DIR_ATTR_DIR){ // a directory
         printf("/");
@@ -387,6 +387,7 @@ void disk_list_root_dir(){
         total_entries+=print_dir_in_cluster(dir_cluster);
     }
     printf("Total number of entries = %d\n", total_entries);
+    disk_print_fat(2, 10);
 }
 
 void disk_recover_file_continuous(const char* filename, const char* sha1){
@@ -413,7 +414,10 @@ void disk_recover_file_continuous(const char* filename, const char* sha1){
             printf("%s: file not found\n", filename);
         else{
             recover_dir_continuous(deleted_ent, filename);
-            printf("%s: successfully recovered\n", filename);
+            if(sha1!=NULL)
+                printf("%s: successfully recovered with SHA-1\n", filename);
+            else
+                printf("%s: successfully recovered\n", filename);
         }
     }
     #undef DELETED_DIRS_LEN

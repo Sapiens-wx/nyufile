@@ -24,20 +24,17 @@ int main(int argc, char* argv[]){
 	while(-1!=(opt=getopt(argc, argv, "ils:r:R:"))){
 		switch(opt){
 			case 'i':
-				args.opt='i';
-				break;
 			case 'l':
-				args.opt='l';
+				error|=args.opt!=-1;
+				args.opt=opt;
 				break;
 			case 's':
 				args.sha1=optarg;
 				break;
 			case 'r':
-				args.opt='r';
-				args.filename=optarg;
-				break;
 			case 'R':
-				args.opt='R';
+				error|=args.opt!=-1;
+				args.opt=opt;
 				args.filename=optarg;
 				break;
 			default:
@@ -45,13 +42,19 @@ int main(int argc, char* argv[]){
 				break;
 		}
 	}
-	if(optind>=argc)
-		error=1;
-	if(args.opt=='R' && args.sha1==NULL)
-		error=1;
+	error|=optind>=argc;
+	error|=optind+1<argc; // cannot take any more arguments other than disk name
+	error|=args.opt==-1;
+	error|=args.opt=='R' && args.sha1==NULL;
+	error|=args.filename!=NULL && args.filename[0]=='-'; // the argument cannot be a flag
+	error|=args.sha1!=NULL && args.sha1[0]=='-'; // the argument cannot be a flag
+	error|=args.opt=='i'&&args.sha1!=NULL; // -i flag cannot have -s flag
+	error|=args.opt=='l'&&args.sha1!=NULL; // -l flag cannot have -s flag
 	if(error){
 		print_help_msg();
 	} else{
+		printf("valid\n");
+		return 0;
 		args.diskname=argv[optind];
 		disk_init(args.diskname);
 		switch(args.opt){
