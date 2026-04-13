@@ -50,8 +50,9 @@ typedef struct DirEntry {
 #pragma pack(pop)
 
 typedef enum EDIR_Attr{
-    DIR_ATTR_LFN=0x0F,
+    DIR_ATTR_VOLUMN=0x08,
     DIR_ATTR_DIR=0x10,
+    DIR_ATTR_LFN=0x0F,
 } EDIR_Attr;
 
 enum EFAT{

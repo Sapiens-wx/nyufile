@@ -91,6 +91,13 @@ void disk_print_fat(int start, int len){
 int dir_is_unallocated(DirEntry* dir_entry){
     return dir_entry->DIR_Name[0]==0 || dir_entry->DIR_Name[0]==0xe5;
 }
+int dir_is_deleted(DirEntry* dir_entry){
+    return dir_entry->DIR_Name[0]==0xe5;
+}
+int dir_is_regular_file(DirEntry* dir_entry){
+    return !(dir_entry->DIR_Attr&(unsigned char)DIR_ATTR_DIR) &&
+        !(dir_entry->DIR_Attr&(unsigned char)DIR_ATTR_VOLUMN);
+}
 int dir_is_lfn(DirEntry* dir_entry){
     return dir_entry->DIR_Attr==DIR_ATTR_LFN;
 }
@@ -156,10 +163,11 @@ int is_deleted_dir_match_filename(DirEntry* dir, const char* filename){
             while(i<8)
                 actual_filename[i++]=' ';
             ++filename_it;
+        } else if(*filename_it=='\0'){
+            actual_filename[i++]=' ';
         } else{
             actual_filename[i++]=*filename_it;
-            if(*filename_it)
-                ++filename_it;
+            ++filename_it;
         }
     }
     return memcmp(dir_name, actual_filename+1, 10)==0;
@@ -172,7 +180,7 @@ void find_deleted_dir_internal(DirEntry* cluster, const char* filename, DirEntry
     const int max_entries=cluster_size/sizeof(DirEntry);
     for(int i=0;i<max_entries;++i){
         DirEntry* cur=cluster+i;
-        if(!dir_is_lfn(cur) && dir_is_unallocated(cur)){
+        if(!dir_is_lfn(cur) && dir_is_deleted(cur) && dir_is_regular_file(cur)){
             if(is_deleted_dir_match_filename(cur, filename)){
                 if(*out_deleted_dirs_len>=out_deleted_dirs_cap)
                     perror("find_deleted_dir: out_deleted_dirs out of space");
@@ -299,6 +307,7 @@ typedef struct Permute_t{
 } Permute_t;
 
 int permute_dir_internal(Permute_t* info, int permute_idx){
+    //printf("permute idx=%d, num_clusters=%d\n", permute_idx, info->num_clusters);
     if(permute_idx==info->num_clusters){
         // done permuting. do the thing
         unsigned char dir_sha1[SHA_DIGEST_LENGTH];
@@ -309,14 +318,17 @@ int permute_dir_internal(Permute_t* info, int permute_idx){
         return 0;
     }
     for(int i=CLUSTER_START_IDX;i<SEARCH_CLUSTER_END_INDEX;++i){
-        info->hash[i]=fat(i);
-        if(info->hash[i]==0){
+        if(info->hash[i]==0 && fat(i)==0){
             info->hash[i]=1;
             info->permutation[permute_idx]=i;
             long long rest_file_size=info->file_size-permute_idx*info->cluster_size;
             memcpy(info->data+permute_idx*info->cluster_size, get_cluster(i), rest_file_size>info->cluster_size?info->cluster_size:rest_file_size);
             if(permute_dir_internal(info, permute_idx+1))
                 return 1;
+            // reset hash
+            for(int i=permute_idx;i<info->num_clusters;++i){
+                info->hash[info->permutation[i]]=0;
+            }
         }
     }
     return 0;
@@ -337,7 +349,9 @@ int permute_dir(DirEntry* dir, const char* sha1, Permute_t* out_permute_info){
     out_permute_info->num_clusters=num_clusters;
 
     out_permute_info->permutation[0]=get_cluster_lh(dir);
+    memset(out_permute_info->hash, 0, sizeof(out_permute_info->hash));
     out_permute_info->hash[out_permute_info->permutation[0]]=1;
+    memcpy(out_permute_info->data, get_cluster(get_cluster_lh(dir)), file_size>cluster_size?cluster_size:(int)file_size);
     return permute_dir_internal(out_permute_info, 1);
 }
 DirEntry* recover_dir_sha1(const char* filename, DirEntry** dirs, int dirs_len, const char* sha1){
@@ -387,7 +401,6 @@ void disk_list_root_dir(){
         total_entries+=print_dir_in_cluster(dir_cluster);
     }
     printf("Total number of entries = %d\n", total_entries);
-    disk_print_fat(2, 10);
 }
 
 void disk_recover_file_continuous(const char* filename, const char* sha1){

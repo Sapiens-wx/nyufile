@@ -53,8 +53,6 @@ int main(int argc, char* argv[]){
 	if(error){
 		print_help_msg();
 	} else{
-		printf("valid\n");
-		return 0;
 		args.diskname=argv[optind];
 		disk_init(args.diskname);
 		switch(args.opt){
