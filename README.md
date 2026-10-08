@@ -1,81 +1,81 @@
 # nyufile
 
-## 项目介绍
+## Overview
 
-`nyufile` 是用 C 编写的 FAT32 磁盘镜像分析与文件恢复工具。它直接读取镜像中的引导扇区、文件分配表（FAT）和根目录，支持：
+`nyufile` is a FAT32 disk image analysis and file recovery tool written in C. It directly reads the boot sector, file allocation tables (FATs), and root directory of an image. It supports:
 
-- 显示文件系统的基本信息。
-- 列出根目录中的文件和目录。
-- 恢复连续分配的已删除文件，可通过 SHA-1 校验筛选候选文件。
-- 根据 SHA-1 校验搜索并恢复非连续分配的已删除文件。
+- Displaying basic file system information.
+- Listing files and directories in the root directory.
+- Recovering deleted files stored in contiguous clusters, with optional SHA-1 verification to select a candidate.
+- Searching for and recovering deleted files stored in non-contiguous clusters using SHA-1 verification.
 
-恢复操作会在镜像中恢复目录项并重建 FAT 链，文件仍保存在镜像内。
+Recovery restores the directory entry and rebuilds the FAT chain inside the image. The recovered file remains in the image.
 
-## 编译
+## Building
 
-需要 Linux/POSIX 环境、GCC、GNU Make 和 OpenSSL 开发库（头文件与 `libcrypto`）。Windows 用户可在 WSL 或 Linux 容器内编译。
+Requires a Linux/POSIX environment, GCC, GNU Make, and the OpenSSL development libraries (headers and `libcrypto`). Windows users can build in WSL or a Linux container.
 
-在 Debian/Ubuntu 中可安装依赖：
+On Debian/Ubuntu, install the dependencies with:
 
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential libssl-dev
 ```
 
-从本仓库的 `labs` 目录开始编译：
+Starting from the parent `labs` directory:
 
 ```bash
 cd nyufile
 make
 ```
 
-生成当前目录下的可执行文件 `nyufile`，中间目标文件位于 `build/`。makefile 使用 C99，并通过 `-lcrypto` 链接 OpenSSL。
+This creates the `nyufile` executable in the current directory and intermediate object files in `build/`. The makefile uses C99 and links OpenSSL with `-lcrypto`.
 
-清理编译产物：
+To remove build artifacts:
 
 ```bash
 make clean
 ```
 
-## 使用
+## Usage
 
 ```text
 ./nyufile disk <options>
 ```
 
-`disk` 是 FAT32 文件系统镜像路径。每次执行选择一种操作：
+`disk` is the path to a FAT32 file system image. Select one operation per invocation:
 
-| 参数 | 用途 |
+| Option | Description |
 | --- | --- |
-| `-i` | 显示 FAT 数量、每扇区字节数、每簇扇区数及保留扇区数。 |
-| `-l` | 列出根目录条目及条目总数。 |
-| `-r filename` | 恢复连续分配的已删除文件。 |
-| `-r filename -s sha1` | 使用 SHA-1 校验后恢复连续分配的文件。 |
-| `-R filename -s sha1` | 搜索可能非连续分配的文件，必须提供 SHA-1。 |
+| `-i` | Display the number of FATs, bytes per sector, sectors per cluster, and reserved sectors. |
+| `-l` | List root directory entries and the total entry count. |
+| `-r filename` | Recover a deleted file stored in contiguous clusters. |
+| `-r filename -s sha1` | Recover a contiguous file after verifying its SHA-1 hash. |
+| `-R filename -s sha1` | Search for a possibly non-contiguous file. SHA-1 is required. |
 
-以目录内的 `fat32.disk` 为例：
+For example, inspect the `fat32.disk` image in this directory:
 
 ```bash
 ./nyufile fat32.disk -i
 ./nyufile fat32.disk -l
 ```
 
-恢复会直接修改镜像，先复制镜像，再对副本操作。下面的 `HELLO.TXT` 应替换为实际已删除文件的 FAT 短文件名：
+Recovery modifies the image directly. Copy the image first and work on the copy. Replace `HELLO.TXT` below with the FAT short filename of the deleted file:
 
 ```bash
 cp fat32.disk recovery.disk
 ./nyufile recovery.disk -r HELLO.TXT
 ```
 
-如需校验，将下面的 `SHA1` 替换为原文件内容的 40 位十六进制 SHA-1 值：
+For verification, replace `SHA1` below with the 40-digit hexadecimal SHA-1 hash of the original file contents:
 
 ```bash
 ./nyufile recovery.disk -r HELLO.TXT -s SHA1
 ./nyufile recovery.disk -R HELLO.TXT -s SHA1
 ```
 
-两条恢复命令是不同场景下的用法，按文件分配方式选择一条。若保留了原文件，可以事先使用 `sha1sum HELLO.TXT` 获取校验值。
+These are alternative recovery commands; choose one based on the file's allocation pattern. If you have a copy of the original file, obtain its hash beforehand with `sha1sum HELLO.TXT`.
 
-成功时显示 `successfully recovered` 或 `successfully recovered with SHA-1`；找不到匹配文件时显示 `file not found`。未提供 SHA-1 且存在多个同名候选时，显示 `multiple candidates found`。
+Successful recovery prints `successfully recovered` or `successfully recovered with SHA-1`. If no matching file is found, the program prints `file not found`. If multiple candidates exist and no SHA-1 hash is supplied, it prints `multiple candidates found`.
 
-当前实现仅搜索根目录，使用 FAT 的 8.3 短文件名进行匹配，区分大小写；通常应使用大写名称，例如 `HELLO.TXT`。非连续恢复采用有限范围的穷举搜索：文件最多占用 5 个簇，起始簇需位于簇号 2–21 内，后续候选簇也从该范围内的空闲簇中选择。镜像必须可读写，即使执行 `-i` 或 `-l` 也会以读写方式打开。
+The current implementation searches only the root directory and matches FAT 8.3 short filenames case-sensitively. Uppercase names, such as `HELLO.TXT`, should normally be used. Non-contiguous recovery uses a bounded exhaustive search: the file must occupy at most 5 clusters, its starting cluster must be in the range 2–21, and subsequent candidate clusters are selected from free clusters in that same range. The image must be readable and writable, even for `-i` and `-l`, because it is opened in read/write mode.
